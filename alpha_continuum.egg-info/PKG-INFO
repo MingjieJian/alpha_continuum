@@ -1,0 +1,22 @@
+Metadata-Version: 2.1
+Name: alpha_continuum
+Version: 0.0.1
+Summary: The code for spectral continuum normalization using alpha shape method.
+Home-page: https://github.com/MingjieJian/alpha_continuum
+Author: Mingjie Jian
+Author-email: ssaajianmingjie@gmail.com
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Framework :: IPython
+Classifier: Operating System :: OS Independent
+Classifier: Development Status :: 2 - Pre-Alpha
+Classifier: Topic :: Scientific/Engineering :: Astronomy
+Requires-Python: >=3.5
+Description-Content-Type: text/markdown
+Requires-Dist: numpy
+Requires-Dist: pandas
+Requires-Dist: matplotlib
+Requires-Dist: scipy
+
+# alpha_continuum
+The code for spectral continuum normalization using alpha shape method.
