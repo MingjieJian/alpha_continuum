@@ -6,7 +6,7 @@ from scipy.signal import savgol_filter, correlate
 from scipy.interpolate import UnivariateSpline, Akima1DInterpolator, interp1d
 
 # Remove the peaks
-def peak_removal(spec, n_iter=5, printout=False, plot=False, plot_save_dir=None, max_roll_width=100, quantile_width=5):
+def peak_removal(spec, n_iter=5, printout=False, plot=False, plot_save_dir=None, max_roll_width=100, quantile_width=5, smooth_quantile=0.7, smooth_width=3, plot_title=''):
 
     dwave = np.mean(np.diff(spec['wave']))
     flux = spec['flux'].values.copy()
@@ -33,16 +33,21 @@ def peak_removal(spec, n_iter=5, printout=False, plot=False, plot_save_dir=None,
 
     spec['flux_peaks_removed'] = flux
     spec['indices_peaks'] = mask_overall
-    spec['flux_peaks_removed_smoothed'] = np.ravel(pd.DataFrame(spec['flux_peaks_removed']).rolling(int(3/dwave), min_periods=1, center=True).quantile(0.50))
+    spec['flux_peaks_removed_smoothed'] = np.ravel(pd.DataFrame(spec['flux_peaks_removed']).rolling(int(smooth_width/dwave), min_periods=1, center=True).quantile(smooth_quantile))
 
     if plot:
         plt.figure(figsize=(13, 3), dpi=150)
         plt.plot(spec['wave'], spec['flux'], lw=0.5, label='flux')
-        plt.plot(spec['wave'], spec['flux_peaks_removed'], lw=0.5, label='flux_peaks_removed')
+        plt.plot(spec['wave'], spec['flux_peaks_removed_smoothed'], lw=0.5, label='flux_peaks_removed_smoothed')
+        plt.plot(spec['wave'], sup_fast, ls='--', lw=0.5, label='sup_fast', c='C2')
+        plt.plot(spec['wave'], maxi_roll_fast, ls='--', lw=0.5, label='maxi_roll_fast', c='C3')
         plt.plot(spec.loc[mask_overall, 'wave'], spec.loc[mask_overall, 'flux'], 
                  'x', color='red', markersize=4, alpha=0.5, label='peaks removed')
         plt.xlabel('Wavelength ($\mathrm{\AA}$)')
         plt.legend()
+        if plot_title != '':
+            plt.title(plot_title)
+        plt.tight_layout()
         if plot_save_dir is not None:
             plt.savefig(f'{plot_save_dir}/peak_removal.pdf')
         
@@ -63,7 +68,6 @@ def snr_smooth(spec, max_smooth_width=10, plot=False, plot_save_dir=None):
     snr_smooth_width[snr_smooth_width > max_smooth_width] = max_smooth_width
     spec['snr_smooth_width'] = snr_smooth_width
     spec['flux_snr_smooth'] = spec['flux'].copy()
-    # print(spec.groupby('snr_smooth_width').size().index)
     if not (spec['snr_smooth_width'] == 1).all():
         for width in spec.groupby('snr_smooth_width').size().index:
             indices = spec['snr_smooth_width'] == width
@@ -75,6 +79,7 @@ def snr_smooth(spec, max_smooth_width=10, plot=False, plot_save_dir=None):
         plt.plot(spec['wave'], spec['flux_snr_smooth'], lw=0.5, label='flux_snr_smooth')
         plt.xlabel('Wavelength ($\mathrm{\AA}$)')
         plt.legend()
+        plt.tight_layout()
         if plot_save_dir is not None:
             plt.savefig(f'{plot_save_dir}/snr_smooth.pdf')
     
@@ -179,25 +184,24 @@ def log_wav2rv(wav):
             
     return rv_array
 
-def determine_line_width(spec, printout=False, plot=False, plot_save_dir=None):
+def determine_line_width(spec, rollmax_width=20, printout=False, plot=False, plot_save_dir=None, plot_title=''):
     
     dwave = np.mean(np.diff(spec['wave']))
     mask = np.zeros(len(spec))
 
-    continuum = rough_continuum(spec['flux_peaks_removed_smoothed'], dwave)
+    continuum = rough_continuum(spec['flux_peaks_removed_smoothed'], dwave, rollmax_width=rollmax_width, quantile=0.9)
 
     # Place the raw-continuum normalized spectrum in log wavelength scale. 
     log_grid = np.linspace(np.log10(spec['wave']).min(), np.log10(spec['wave']).max(), len(spec['wave']))
     log_spectrum = interp1d(np.log10(spec['wave']), spec['flux_peaks_removed_smoothed']/continuum, kind='cubic', bounds_error=False, fill_value='extrapolate')(log_grid)
     
     ccf = correlate((log_spectrum - np.mean(log_spectrum)) / np.std(log_spectrum), (log_spectrum - np.mean(log_spectrum)) / np.std(log_spectrum), mode='same') / len(log_spectrum)
-    # ccf_pixel = np.arange(len(ccf))
-    # ccf_pixel -= ccf_pixel[np.argmax(ccf)]
     ccf_rv = log_wav2rv(10**log_grid)
 
-    fwhm = ccf_rv[ccf > 0.5]
+    fwhm = ccf_rv[(np.abs(ccf-0.5) < 0.05) & (ccf_rv > 0)]
     # return fwhm
-    fwhm_km = fwhm[-1] - fwhm[0]
+    # fwhm_km = fwhm[-1] - fwhm[0]
+    fwhm_km = 2*np.min(fwhm)
     
     if plot:
         plt.figure(figsize=(13, 3), dpi=150)
@@ -206,7 +210,8 @@ def determine_line_width(spec, printout=False, plot=False, plot_save_dir=None):
         plt.xlim(-10*fwhm_km, 10*fwhm_km)
         plt.xlabel('Radial Velocity (km/s)')
         plt.ylabel('CCF')
-        plt.title(f' FWHM computed from the CCF is about: {fwhm_km:.2f} [km/s]')
+        plt.title(f'{plot_title}; FWHM computed from the CCF is about: {fwhm_km:.2f} [km/s]')
+        plt.tight_layout()
         if plot_save_dir is not None:
             plt.savefig(f'{plot_save_dir}/line_width.pdf')
     
@@ -215,17 +220,17 @@ def determine_line_width(spec, printout=False, plot=False, plot_save_dir=None):
 
     return fwhm_km
 
-def determine_alpha_radius(spec, line_fwhm, base_ratio=2, penality_ratio=1, plot=False, plot_save_dir=None):
+def determine_alpha_radius(spec, line_fwhm, base_ratio=2, penalty_ratio=1, rollmax_width=20, plot=False, plot_save_dir=None, plot_title=''):
     # Calculate the alpha-radius
-    continuum_large = rough_continuum(spec['flux_peaks_removed'], np.mean(np.diff(spec['wave'])), rollmax_width=30, quantile=0.9)
+    continuum_large = rough_continuum(spec['flux_peaks_removed'], np.mean(np.diff(spec['wave'])), rollmax_width=rollmax_width, quantile=0.9)
     penalite0 = (continuum_large - spec['flux_peaks_removed'])/continuum_large
     penalite0 /= np.max(penalite0)
     r = line_fwhm/3e5*spec['wave']
     r *= base_ratio
-    penality = r * (1 + penalite0*penality_ratio)
-    penality_step = np.round(penality, decimals=0)
-    penality_step[penality_step<line_fwhm/3e5*spec['wave']] = line_fwhm/3e5*spec.loc[penality_step<line_fwhm/3e5*spec['wave'], 'wave']
-    spec['radius'] = penality_step
+    penalty = r * (1 + penalite0*penalty_ratio)
+    penalty_step = np.round(penalty, decimals=0)
+    penalty_step[penalty_step<line_fwhm/3e5*spec['wave']] = line_fwhm/3e5*spec.loc[penalty_step<line_fwhm/3e5*spec['wave'], 'wave']
+    spec['radius'] = penalty_step
 
     if plot:
         plt.figure(figsize=(13, 3), dpi=150)
@@ -233,10 +238,13 @@ def determine_alpha_radius(spec, line_fwhm, base_ratio=2, penality_ratio=1, plot
         line2, = plt.plot(spec['wave'], continuum_large, lw=1, label='Rough continuum (left)', c='C1')
         
         plt.twinx()
-        line3, = plt.plot(spec['wave'], penality_step, lw=0.5, c='C3', label='alpha radius (right)')
+        line3, = plt.plot(spec['wave'], penalty_step, lw=0.5, c='C3', label='alpha radius (right)')
         lines = [line1, line2, line3]
         plt.legend(lines, [line.get_label() for line in lines])
         plt.xlabel('Wavelength ($\mathrm{\AA}$)')
+        if plot_title != '':
+            plt.title(plot_title)
+        plt.tight_layout()
         if plot_save_dir is not None:
             plt.savefig(f'{plot_save_dir}/alpha_radius.pdf')
             
@@ -268,7 +276,7 @@ def find_next_edge_point(spec, flux, radius=-1):
         pixel_index_next = spec_chunk.index[-1]
         line_paras = np.polyfit([pixel_x, pixel_x_next], [pixel_y, pixel_y_next], 1)
         indices = spec_chunk[flux] > np.polyval(line_paras, spec_chunk['wave']) + 1
-        # plt.scatter(spec_chunk.loc[indices, 'wave'], spec_chunk.loc[indices, 'flux_stretch'], s=1)
+        # plt.scatter(spec_chunk.loc[indices, 'wave'], spec_chunk.loc[indices, 'flux_stretched'], s=1)
         spec_chunk = spec_chunk[indices]
         
         if edge_length == len(spec_chunk):
@@ -302,53 +310,94 @@ def find_all_edge_points(spec, flux, radius=-1):
 
     return spec_out
 
-def rolling_line(spec, stretch=True, fit_method='poly', plot=False, plot_save_dir=None, poly_deg=8):
+def rolling_line(spec, stretch=True, fit_method='poly', plot=False, plot_save_dir=None, poly_deg=8, plot_title=''):
     if stretch:
         stretch_ratio = np.ptp(spec['flux']) / np.ptp(spec['wave']) # stretch the y axis to scale the x and y axis
     else:
         stretch_ratio = 1
-    spec['flux_peaks_removed_smoothed_stretch'] = spec['flux_peaks_removed_smoothed'] / stretch_ratio
-    spec['flux_stretch'] = spec['flux'] / stretch_ratio  
+    spec['flux_peaks_removed_smoothed_stretched'] = spec['flux_peaks_removed_smoothed'] / stretch_ratio
+    spec['flux_peaks_removed_stretched'] = spec['flux_peaks_removed'] / stretch_ratio
+    spec['flux_stretched'] = spec['flux'] / stretch_ratio
     spec['edge'] = False
 
     # Roll the line
-    spec = find_all_edge_points(spec, 'flux_peaks_removed_smoothed_stretch')
+    spec = find_all_edge_points(spec, 'flux_peaks_removed_smoothed_stretched')
     
     if fit_method == 'poly':
-        poly_fitting = np.polyfit(spec.loc[spec['edge'], 'wave'], spec.loc[spec['edge'], 'flux_peaks_removed_smoothed_stretch'], poly_deg)
-        spec['flux_stretch_normed'] = spec['flux_stretch'] / np.polyval(poly_fitting, spec['wave'])
+        poly_fitting = np.polyfit(spec.loc[spec['edge'], 'wave'], spec.loc[spec['edge'], 'flux_peaks_removed_smoothed_stretched'], poly_deg)
         spec['continuum'] = np.polyval(poly_fitting, spec['wave'])
+        spec['flux_normed'] = spec['flux_stretched'] / spec['continuum']
     elif fit_method == 'spline':
-        cs = UnivariateSpline(spec.loc[spec['edge'], 'wave'], spec.loc[spec['edge'], 'flux_peaks_removed_smoothed_stretch'])
-        spec['flux_stretch_normed'] = spec['flux_stretch'] / cs(spec['wave'])
+        cs = UnivariateSpline(spec.loc[spec['edge'], 'wave'], spec.loc[spec['edge'], 'flux_peaks_removed_smoothed_stretched'])
         spec['continuum'] = cs(spec['wave'])
+        spec['flux_normed'] = spec['flux_stretched'] / spec['continuum']
     elif fit_method == 'akima':
-        cs = Akima1DInterpolator(spec.loc[spec['edge'], 'wave'], spec.loc[spec['edge'], 'flux_peaks_removed_smoothed_stretch'])
-        spec['flux_stretch_normed'] = spec['flux_stretch'] / cs(spec['wave'])
+        cs = Akima1DInterpolator(spec.loc[spec['edge'], 'wave'], spec.loc[spec['edge'], 'flux_peaks_removed_smoothed_stretched'])
         spec['continuum'] = cs(spec['wave'])
+        spec['flux_normed'] = spec['flux_stretched'] / spec['continuum']
     else:
         raise ValueError('The interpoation method is not supported.') 
 
     if plot:
         plt.figure(figsize=(13, 3), dpi=150)
-        plt.plot(spec.loc[:, 'wave'], spec.loc[:, 'flux_stretch'], lw=0.5, zorder=0, label='flux')
-        plt.scatter(spec.loc[spec['edge'], 'wave'], spec.loc[spec['edge'], 'flux_peaks_removed_smoothed_stretch'], 
+        plt.plot(spec.loc[:, 'wave'], spec.loc[:, 'flux_stretched'], lw=0.5, zorder=0, label='flux')
+        plt.plot(spec['wave'], spec['flux_peaks_removed_smoothed_stretched'], lw=0.5, label='flux_peaks_removed_smoothed_stretched')
+        plt.scatter(spec.loc[spec['edge'], 'wave'], spec.loc[spec['edge'], 'flux_peaks_removed_smoothed_stretched'], 
                     s=1, color='red', label='continuum points')
         plt.plot(spec['wave'], spec['continuum'], lw=1, label='continuum')
         plt.legend()
         plt.xlabel('Wavelength ($\mathrm{\AA}$)')
+        if plot_title != '':
+            plt.title(plot_title)
+        plt.tight_layout()
         if plot_save_dir is not None:
             plt.savefig(f'{plot_save_dir}/rolling_line.pdf')
 
     return spec
 
-def normalization(spec, stretch=True, fit_method='poly', base_ratio=2, penality_ratio=1, poly_deg=8, printout=False, plot=False, plot_save_dir=None):
+def normalization(spec_in, stretch=True, fit_method='poly', rollmax_width=20, base_ratio=2, penalty_ratio=1, poly_deg=8, printout=False, plot=False, plot_save_dir=None, detail_out=False, plot_title=''):
     '''
     The main function to perform normalization.
+
+    Parameters
+    ----------
+    spec_in : pandas.DataFrame
+        The spectra to perform continuum normalization. Must contains columns of wave and flux. snr is optional.
+    stretch :
+        Whether stretch the span of flux to that of wave. 
+    fit_method :
+        The method to interpolate the continuum points. Default is polynomial.
+    poly_deg :
+        The polynomial degree used for interpolation. Default is 8.
+    rollmax_width : default 20 (AA)
+        The large rolling window width for determine_line_width and determine_alpha_radius.
+    base_ratio : deafult 2 (AA)
+        The base enlarge ratio for the alpha-radius by r = r_base * base_ratio * (1 + penalty_ratio*penalty).
+    penalty_ratio : deafult 1 (AA)
+        The ratio for converting penalty to alpha-radius by r = r_base * base_ratio * (1 + penalty_ratio*penalty)。
+    printout :
+        Whether print out some status.
+    plot :
+        Whether produce result plots.
+    plot_save_dir :
+        The directory to save the plots.
+    detail_out : 
+        Whether output detail and intermediate results.
+    plot_title :
+        The title of the plots.
+
+    Returns
+    ---------
+    spec : pandas.DataFrame
+        The output continuum normalized spectra. 
+
     '''
-    spec = peak_removal(spec.copy(), printout=printout, plot=plot, plot_save_dir=plot_save_dir)
-    spec = snr_smooth(spec, plot=plot, plot_save_dir=plot_save_dir)
-    line_fwhm = determine_line_width(spec, printout=printout, plot=plot, plot_save_dir=plot_save_dir)
-    spec = determine_alpha_radius(spec, line_fwhm, base_ratio=base_ratio, penality_ratio=penality_ratio, plot=plot, plot_save_dir=plot_save_dir)
-    spec = rolling_line(spec, stretch=stretch, fit_method=fit_method, plot=plot, plot_save_dir=plot_save_dir, poly_deg=poly_deg)
+    spec = peak_removal(spec_in.copy(), printout=printout, plot=plot, plot_save_dir=plot_save_dir, plot_title=plot_title)
+    # spec = snr_smooth(spec, plot=plot, plot_save_dir=plot_save_dir)
+    line_fwhm = determine_line_width(spec, rollmax_width=rollmax_width, printout=printout, plot=plot, plot_save_dir=plot_save_dir, plot_title=plot_title)
+    spec = determine_alpha_radius(spec, line_fwhm, base_ratio=base_ratio, penalty_ratio=penalty_ratio, rollmax_width=rollmax_width,plot=plot, plot_save_dir=plot_save_dir, plot_title=plot_title)
+    spec = rolling_line(spec, stretch=stretch, fit_method=fit_method, plot=plot, plot_save_dir=plot_save_dir, poly_deg=poly_deg, plot_title=plot_title)
+
+    if not detail_out:
+        spec = spec[list(spec_in.columns) + ['continuum', 'flux_normed']]
     return spec
