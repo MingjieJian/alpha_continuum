@@ -325,24 +325,24 @@ def rolling_line(spec, stretch=True, fit_method='poly', plot=False, plot_save_di
     
     if fit_method == 'poly':
         poly_fitting = np.polyfit(spec.loc[spec['edge'], 'wave'], spec.loc[spec['edge'], 'flux_peaks_removed_smoothed_stretched'], poly_deg)
-        spec['continuum'] = np.polyval(poly_fitting, spec['wave'])
-        spec['flux_normed'] = spec['flux_stretched'] / spec['continuum']
+        spec['continuum'] = np.polyval(poly_fitting, spec['wave']) * stretch_ratio
+        spec['flux_normed'] = spec['flux'] / spec['continuum']
     elif fit_method == 'spline':
         cs = UnivariateSpline(spec.loc[spec['edge'], 'wave'], spec.loc[spec['edge'], 'flux_peaks_removed_smoothed_stretched'])
-        spec['continuum'] = cs(spec['wave'])
-        spec['flux_normed'] = spec['flux_stretched'] / spec['continuum']
+        spec['continuum'] = cs(spec['wave']) * stretch_ratio
+        spec['flux_normed'] = spec['flux'] / spec['continuum']
     elif fit_method == 'akima':
         cs = Akima1DInterpolator(spec.loc[spec['edge'], 'wave'], spec.loc[spec['edge'], 'flux_peaks_removed_smoothed_stretched'])
-        spec['continuum'] = cs(spec['wave'])
-        spec['flux_normed'] = spec['flux_stretched'] / spec['continuum']
+        spec['continuum'] = cs(spec['wave']) * stretch_ratio
+        spec['flux_normed'] = spec['flux'] / spec['continuum']
     else:
         raise ValueError('The interpoation method is not supported.') 
 
     if plot:
         plt.figure(figsize=(13, 3), dpi=150)
-        plt.plot(spec.loc[:, 'wave'], spec.loc[:, 'flux_stretched'], lw=0.5, zorder=0, label='flux')
-        plt.plot(spec['wave'], spec['flux_peaks_removed_smoothed_stretched'], lw=0.5, label='flux_peaks_removed_smoothed_stretched')
-        plt.scatter(spec.loc[spec['edge'], 'wave'], spec.loc[spec['edge'], 'flux_peaks_removed_smoothed_stretched'], 
+        plt.plot(spec.loc[:, 'wave'], spec.loc[:, 'flux'], lw=0.5, zorder=0, label='flux')
+        plt.plot(spec['wave'], spec['flux_peaks_removed_smoothed'], lw=0.5, label='flux_peaks_removed_smoothed')
+        plt.scatter(spec.loc[spec['edge'], 'wave'], spec.loc[spec['edge'], 'flux_peaks_removed_smoothed'], 
                     s=1, color='red', label='continuum points')
         plt.plot(spec['wave'], spec['continuum'], lw=1, label='continuum')
         plt.legend()
