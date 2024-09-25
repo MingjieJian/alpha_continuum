@@ -43,7 +43,7 @@ def peak_removal(spec, n_iter=5, printout=False, plot=False, plot_save_dir=None,
         plt.plot(spec['wave'], maxi_roll_fast, ls='--', lw=0.5, label='maxi_roll_fast', c='C3')
         plt.plot(spec.loc[mask_overall, 'wave'], spec.loc[mask_overall, 'flux'], 
                  'x', color='red', markersize=4, alpha=0.5, label='peaks removed')
-        plt.xlabel('Wavelength ($\mathrm{\AA}$)')
+        plt.xlabel(r'Wavelength ($\mathrm{\AA}$)')
         plt.legend()
         if plot_title != '':
             plt.title(plot_title)
@@ -77,7 +77,7 @@ def snr_smooth(spec, max_smooth_width=10, plot=False, plot_save_dir=None):
         plt.figure(figsize=(13, 3), dpi=150)
         plt.plot(spec['wave'], spec['flux'], lw=0.5, label='flux')
         plt.plot(spec['wave'], spec['flux_snr_smooth'], lw=0.5, label='flux_snr_smooth')
-        plt.xlabel('Wavelength ($\mathrm{\AA}$)')
+        plt.xlabel(r'Wavelength ($\mathrm{\AA}$)')
         plt.legend()
         plt.tight_layout()
         if plot_save_dir is not None:
@@ -241,7 +241,7 @@ def determine_alpha_radius(spec, line_fwhm, base_ratio=2, penalty_ratio=1, rollm
         line3, = plt.plot(spec['wave'], penalty_step, lw=0.5, c='C3', label='alpha radius (right)')
         lines = [line1, line2, line3]
         plt.legend(lines, [line.get_label() for line in lines])
-        plt.xlabel('Wavelength ($\mathrm{\AA}$)')
+        plt.xlabel(r'Wavelength ($\mathrm{\AA}$)')
         if plot_title != '':
             plt.title(plot_title)
         plt.tight_layout()
@@ -346,7 +346,7 @@ def rolling_line(spec, stretch=True, fit_method='poly', plot=False, plot_save_di
                     s=1, color='red', label='continuum points')
         plt.plot(spec['wave'], spec['continuum'], lw=1, label='continuum')
         plt.legend()
-        plt.xlabel('Wavelength ($\mathrm{\AA}$)')
+        plt.xlabel(r'Wavelength ($\mathrm{\AA}$)')
         if plot_title != '':
             plt.title(plot_title)
         plt.tight_layout()
