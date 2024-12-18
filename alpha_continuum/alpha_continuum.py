@@ -189,7 +189,6 @@ def determine_line_width(spec, rollmax_width=20, printout=False, plot=False, plo
     
     dwave = np.mean(np.diff(spec['wave']))
     mask = np.zeros(len(spec))
-
     continuum = rough_continuum(spec['flux_peaks_removed_smoothed'], dwave, rollmax_width=rollmax_width, quantile=0.9)
 
     # Place the raw-continuum normalized spectrum in log wavelength scale. 
@@ -307,13 +306,13 @@ def find_all_edge_points(spec, flux, radius=-1):
             spec_use = spec_use.loc[pixel_index_next:]
         count += 1
         
-    spec_out['edge'] = spec_out['edge'] & spec_out['con_mask']
+    # spec_out['edge'] = spec_out['edge'] & spec_out['con_mask']
 
     return spec_out
 
 def rolling_line(spec, stretch=True, fit_method='poly', plot=False, plot_save_dir=None, poly_deg=8, spline_s=None, plot_title=''):
     if stretch:
-        stretch_ratio = np.ptp(spec['flux']) / np.ptp(spec['wave']) # stretch the y axis to scale the x and y axis
+        stretch_ratio = (np.nanmax(spec['flux']) - np.nanmin(spec['flux'])) / (np.nanmax(spec['wave']) - np.nanmin(spec['wave'])) # stretch the y axis to scale the x and y axis
     else:
         stretch_ratio = 1
     spec['flux_peaks_removed_smoothed_stretched'] = spec['flux_peaks_removed_smoothed'] / stretch_ratio
