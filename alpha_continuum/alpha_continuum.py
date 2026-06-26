@@ -54,39 +54,6 @@ def peak_removal(spec, n_iter=5, printout=False, plot=False, plot_save_dir=None,
         
     return spec
 
-def snr_smooth(spec, max_smooth_width=10, plot=False, plot_save_dir=None):
-
-    dwave = np.mean(np.diff(spec['wave']))
-    
-    if 'snr' not in spec.columns:
-        flux_nonneg = np.clip(spec['flux'].to_numpy(dtype=float), 0, None)
-        spec['snr'] = np.sqrt(flux_nonneg)
-        spec['snr_con'] = rough_continuum(np.sqrt(flux_nonneg), np.mean(np.diff(spec['wave'])), quantile=0.8)
-    else:
-        spec['snr_con'] = rough_continuum(spec['snr'], np.mean(np.diff(spec['wave'])), quantile=0.8)
-
-    snr_smooth_width = np.ceil((100 / spec['snr_con'])**2)
-    snr_smooth_width[snr_smooth_width < 1] = 1
-    snr_smooth_width[snr_smooth_width > max_smooth_width] = max_smooth_width
-    spec['snr_smooth_width'] = snr_smooth_width
-    spec['flux_snr_smooth'] = spec['flux'].copy()
-    if not (spec['snr_smooth_width'] == 1).all():
-        for width in spec.groupby('snr_smooth_width').size().index:
-            indices = spec['snr_smooth_width'] == width
-            spec.loc[indices, 'flux_snr_smooth'] = np.float32(np.ravel(spec.loc[indices, 'flux_snr_smooth'].rolling(int(width/dwave), min_periods=1, center=True).quantile(0.5)))
-
-    if plot:
-        plt.figure(figsize=(13, 3), dpi=150)
-        plt.plot(spec['wave'], spec['flux'], lw=0.5, label='flux')
-        plt.plot(spec['wave'], spec['flux_snr_smooth'], lw=0.5, label='flux_snr_smooth')
-        plt.xlabel(r'Wavelength ($\mathrm{\AA}$)')
-        plt.legend()
-        plt.tight_layout()
-        if plot_save_dir is not None:
-            plt.savefig(f'{plot_save_dir}/snr_smooth.pdf')
-    
-    return spec
-
 # Determine the alpha radius 
 def smooth(y, box_pts, shape='rectangular'): #rectangular kernel for the smoothing
     box2_pts = int(2*box_pts-1)
@@ -211,7 +178,7 @@ def determine_line_width(spec, rollmax_width=20, printout=False, plot=False, plo
     
     dwave = np.mean(np.diff(spec['wave']))
     mask = np.zeros(len(spec))
-    flux_for_width = 'flux_snr_smooth' if 'flux_snr_smooth' in spec.columns else 'flux_peaks_removed_smoothed'
+    flux_for_width = 'flux_peaks_removed_smoothed'
     continuum = rough_continuum(spec[flux_for_width], dwave, rollmax_width=rollmax_width, quantile=0.9)
 
     # Place the raw-continuum normalized spectrum in log wavelength scale. 
@@ -359,7 +326,7 @@ def find_all_edge_points(spec, flux, radius=-1, start_flux=None, start_window_po
     return spec_out
 
 def rolling_line(spec, stretch=True, fit_method='poly', force_edge_anchors=False, plot=False, plot_save_dir=None, poly_deg=8, spline_s=None, plot_title=''):
-    flux_for_edges = 'flux_snr_smooth' if 'flux_snr_smooth' in spec.columns else 'flux_peaks_removed_smoothed'
+    flux_for_edges = 'flux_peaks_removed_smoothed'
     if stretch:
         stretch_ratio = (np.nanmax(spec['flux']) - np.nanmin(spec['flux'])) / (np.nanmax(spec['wave']) - np.nanmin(spec['wave'])) # stretch the y axis to scale the x and y axis
     else:
@@ -386,32 +353,6 @@ def rolling_line(spec, stretch=True, fit_method='poly', force_edge_anchors=False
     if len(edge_indices) > 0:
         first_edge_idx = edge_indices[0]
         spec.loc[first_edge_idx, 'fit_flux_stretched'] = spec.loc[first_edge_idx, start_flux_for_edges]
-
-    # The last centered-smoothed pixel is a one-sided estimate and can be
-    # anchored by trailing zero/negative edge values. Remove only the terminal
-    # bad-point run so normal edge points are preserved whenever possible.
-    if 'snr_smooth_width' in spec.columns:
-        candidate_mask = spec['edge'].copy()
-        flux_values = spec['flux'].to_numpy(dtype=float)
-        smoothed_values = spec[flux_for_edges].to_numpy(dtype=float)
-
-        trailing_bad = np.zeros(len(spec), dtype=bool)
-        low_threshold = np.nanpercentile(smoothed_values, 5)
-        for i in range(len(spec) - 1, -1, -1):
-            is_last_point = (i == len(spec) - 1)
-            is_nonpos = flux_values[i] <= 0
-            is_anomalously_low = smoothed_values[i] < low_threshold
-            if is_last_point or is_nonpos or is_anomalously_low:
-                trailing_bad[i] = True
-            else:
-                break
-
-        if trailing_bad.any():
-            candidate_mask.iloc[np.where(trailing_bad)[0]] = False
-            current_edges = int(np.sum(spec['edge']))
-            min_required_edges = min(len(spec), max(4, min(poly_deg + 1, current_edges - 1)))
-            if int(np.sum(candidate_mask)) >= min_required_edges:
-                spec['edge'] = candidate_mask
 
     if force_edge_anchors:
         edge_window_points = min(15, len(spec))
@@ -508,7 +449,6 @@ def normalization(spec_in, stretch=True, fit_method='poly', rollmax_width=20, ba
 
     '''
     spec = peak_removal(spec_in.copy(), printout=printout, plot=plot, plot_save_dir=plot_save_dir, plot_title=plot_title)
-    spec = snr_smooth(spec, plot=plot, plot_save_dir=plot_save_dir)
     if radius_override is None:
         line_fwhm = determine_line_width(spec, rollmax_width=rollmax_width, printout=printout, plot=plot, plot_save_dir=plot_save_dir, plot_title=plot_title)
     else:

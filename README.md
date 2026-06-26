@@ -36,10 +36,6 @@ spec_out = normalization(spec_in)
 - `wave`: wavelength array
 - `flux`: flux array
 
-Optional column:
-
-- `snr`: signal-to-noise ratio
-
 ## `normalization(...)`
 
 ```python
