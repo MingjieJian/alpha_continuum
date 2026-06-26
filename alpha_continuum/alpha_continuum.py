@@ -59,8 +59,9 @@ def snr_smooth(spec, max_smooth_width=10, plot=False, plot_save_dir=None):
     dwave = np.mean(np.diff(spec['wave']))
     
     if 'snr' not in spec.columns:
-        spec['snr'] = np.sqrt(spec['flux'])
-        spec['snr_con'] = rough_continuum(np.sqrt(spec['flux']), np.mean(np.diff(spec['wave'])), quantile=0.8)
+        flux_nonneg = np.clip(spec['flux'].to_numpy(dtype=float), 0, None)
+        spec['snr'] = np.sqrt(flux_nonneg)
+        spec['snr_con'] = rough_continuum(np.sqrt(flux_nonneg), np.mean(np.diff(spec['wave'])), quantile=0.8)
     else:
         spec['snr_con'] = rough_continuum(spec['snr'], np.mean(np.diff(spec['wave'])), quantile=0.8)
 
@@ -185,17 +186,42 @@ def log_wav2rv(wav):
             
     return rv_array
 
+def detrend_linewidth_signal(signal, deg=2):
+    """
+    Remove large-scale trends before estimating the CCF width.
+
+    The line-width estimate should respond to local line structure rather than
+    the broad blaze/order shape. A low-order polynomial in pixel space is a
+    simple, scale-free way to suppress that low-frequency component.
+    """
+    signal = np.asarray(signal, dtype=float)
+    if len(signal) < deg + 2:
+        return signal
+
+    x = np.arange(len(signal), dtype=float)
+    try:
+        coeff = np.polyfit(x, signal, deg)
+        trend = np.polyval(coeff, x)
+    except np.linalg.LinAlgError:
+        return signal
+
+    return signal - trend + np.nanmedian(signal)
+
 def determine_line_width(spec, rollmax_width=20, printout=False, plot=False, plot_save_dir=None, plot_title=''):
     
     dwave = np.mean(np.diff(spec['wave']))
     mask = np.zeros(len(spec))
-    continuum = rough_continuum(spec['flux_peaks_removed_smoothed'], dwave, rollmax_width=rollmax_width, quantile=0.9)
+    flux_for_width = 'flux_snr_smooth' if 'flux_snr_smooth' in spec.columns else 'flux_peaks_removed_smoothed'
+    continuum = rough_continuum(spec[flux_for_width], dwave, rollmax_width=rollmax_width, quantile=0.9)
 
     # Place the raw-continuum normalized spectrum in log wavelength scale. 
     log_grid = np.linspace(np.log10(spec['wave']).min(), np.log10(spec['wave']).max(), len(spec['wave']))
-    log_spectrum = interp1d(np.log10(spec['wave']), spec['flux_peaks_removed_smoothed']/continuum, kind='cubic', bounds_error=False, fill_value='extrapolate')(log_grid)
-    
-    ccf = correlate((log_spectrum - np.mean(log_spectrum)) / np.std(log_spectrum), (log_spectrum - np.mean(log_spectrum)) / np.std(log_spectrum), mode='same') / len(log_spectrum)
+    log_spectrum = interp1d(np.log10(spec['wave']), spec[flux_for_width]/continuum, kind='cubic', bounds_error=False, fill_value='extrapolate')(log_grid)
+
+    log_spectrum = detrend_linewidth_signal(log_spectrum)
+    log_spectrum = (log_spectrum - np.mean(log_spectrum)) / np.std(log_spectrum)
+
+    ccf = correlate(log_spectrum, log_spectrum, mode='same') / len(log_spectrum)
     ccf_rv = log_wav2rv(10**log_grid)
 
     len_fwhm = 0
@@ -219,7 +245,17 @@ def determine_line_width(spec, rollmax_width=20, printout=False, plot=False, plo
 
     return fwhm_km
 
-def determine_alpha_radius(spec, line_fwhm, base_ratio=2, penalty_ratio=1, rollmax_width=20, plot=False, plot_save_dir=None, plot_title=''):
+def determine_alpha_radius(spec, line_fwhm, base_ratio=2, penalty_ratio=1, rollmax_width=20, max_radius_ratio=0.1, radius_override=None, plot=False, plot_save_dir=None, plot_title=''):
+    if radius_override is not None:
+        if np.isscalar(radius_override):
+            penalty_step = np.full(len(spec), float(radius_override), dtype=float)
+        else:
+            penalty_step = np.asarray(radius_override, dtype=float)
+            if penalty_step.shape != (len(spec),):
+                raise ValueError('radius_override must be a scalar or have the same length as spec.')
+        spec['radius'] = penalty_step
+        return spec
+
     # Calculate the alpha-radius
     continuum_large = rough_continuum(spec['flux_peaks_removed'], np.mean(np.diff(spec['wave'])), rollmax_width=rollmax_width, quantile=0.9)
     penalite0 = (continuum_large - spec['flux_peaks_removed'])/continuum_large
@@ -227,6 +263,12 @@ def determine_alpha_radius(spec, line_fwhm, base_ratio=2, penalty_ratio=1, rollm
     r = line_fwhm/3e5*spec['wave']
     r *= base_ratio
     penalty = r * (1 + penalite0*penalty_ratio)
+
+    if max_radius_ratio is not None:
+        order_width = np.nanmax(spec['wave']) - np.nanmin(spec['wave'])
+        radius_cap = order_width * max_radius_ratio
+        penalty = np.minimum(penalty, radius_cap)
+
     penalty_step = np.round(penalty, decimals=0)
     penalty_step[penalty_step<line_fwhm/3e5*spec['wave']] = line_fwhm/3e5*spec.loc[penalty_step<line_fwhm/3e5*spec['wave'], 'wave']
     spec['radius'] = penalty_step
@@ -286,12 +328,19 @@ def find_next_edge_point(spec, flux, radius=-1):
     
     return pixel_index_next
 
-def find_all_edge_points(spec, flux, radius=-1):
+def find_all_edge_points(spec, flux, radius=-1, start_flux=None, start_window_points=1):
     spec_use = spec.copy()
     spec_out = spec.copy()
-    spec_out.loc[spec_out.index[0], 'edge'] = True
+    if start_flux is None:
+        start_flux = flux
 
-    count = 1
+    start_window_points = max(1, int(start_window_points))
+    start_window_points = min(start_window_points, len(spec_out))
+    start_chunk = spec_out.iloc[:start_window_points]
+    start_idx = start_chunk[start_flux].idxmax()
+    spec_out.loc[start_idx, 'edge'] = True
+    spec_use = spec_use.loc[start_idx:]
+
     while len(spec_use) > 1:
         pixel_index_next = find_next_edge_point(spec_use, flux, radius)
         while pixel_index_next == -99:
@@ -304,35 +353,86 @@ def find_all_edge_points(spec, flux, radius=-1):
         if pixel_index_next != -99:
             spec_out.loc[pixel_index_next, 'edge'] = True
             spec_use = spec_use.loc[pixel_index_next:]
-        count += 1
         
     # spec_out['edge'] = spec_out['edge'] & spec_out['con_mask']
 
     return spec_out
 
-def rolling_line(spec, stretch=True, fit_method='poly', plot=False, plot_save_dir=None, poly_deg=8, spline_s=None, plot_title=''):
+def rolling_line(spec, stretch=True, fit_method='poly', force_edge_anchors=False, plot=False, plot_save_dir=None, poly_deg=8, spline_s=None, plot_title=''):
+    flux_for_edges = 'flux_snr_smooth' if 'flux_snr_smooth' in spec.columns else 'flux_peaks_removed_smoothed'
     if stretch:
         stretch_ratio = (np.nanmax(spec['flux']) - np.nanmin(spec['flux'])) / (np.nanmax(spec['wave']) - np.nanmin(spec['wave'])) # stretch the y axis to scale the x and y axis
     else:
         stretch_ratio = 1
-    spec['flux_peaks_removed_smoothed_stretched'] = spec['flux_peaks_removed_smoothed'] / stretch_ratio
+    spec['flux_peaks_removed_smoothed_stretched'] = spec[flux_for_edges] / stretch_ratio
+    spec['anchor_flux_stretched'] = spec['flux_peaks_removed_smoothed'] / stretch_ratio
+    spec['fit_flux_stretched'] = spec[flux_for_edges] / stretch_ratio
     spec['flux_peaks_removed_stretched'] = spec['flux_peaks_removed'] / stretch_ratio
     spec['flux_stretched'] = spec['flux'] / stretch_ratio
     spec['edge'] = False
 
-    # Roll the line
-    spec = find_all_edge_points(spec, 'flux_peaks_removed_smoothed_stretched')
+    # Choose the initial left-edge anchor from a small window using the
+    # rough continuum proxy rather than the median-like edge-tracking curve.
+    start_flux_for_edges = 'anchor_flux_stretched'
+    start_window_points = 15
+    spec = find_all_edge_points(
+        spec,
+        'flux_peaks_removed_smoothed_stretched',
+        start_flux=start_flux_for_edges,
+        start_window_points=start_window_points,
+    )
+
+    edge_indices = spec.index[spec['edge']]
+    if len(edge_indices) > 0:
+        first_edge_idx = edge_indices[0]
+        spec.loc[first_edge_idx, 'fit_flux_stretched'] = spec.loc[first_edge_idx, start_flux_for_edges]
+
+    # The last centered-smoothed pixel is a one-sided estimate and can be
+    # anchored by trailing zero/negative edge values. Remove only the terminal
+    # bad-point run so normal edge points are preserved whenever possible.
+    if 'snr_smooth_width' in spec.columns:
+        candidate_mask = spec['edge'].copy()
+        flux_values = spec['flux'].to_numpy(dtype=float)
+        smoothed_values = spec[flux_for_edges].to_numpy(dtype=float)
+
+        trailing_bad = np.zeros(len(spec), dtype=bool)
+        low_threshold = np.nanpercentile(smoothed_values, 5)
+        for i in range(len(spec) - 1, -1, -1):
+            is_last_point = (i == len(spec) - 1)
+            is_nonpos = flux_values[i] <= 0
+            is_anomalously_low = smoothed_values[i] < low_threshold
+            if is_last_point or is_nonpos or is_anomalously_low:
+                trailing_bad[i] = True
+            else:
+                break
+
+        if trailing_bad.any():
+            candidate_mask.iloc[np.where(trailing_bad)[0]] = False
+            current_edges = int(np.sum(spec['edge']))
+            min_required_edges = min(len(spec), max(4, min(poly_deg + 1, current_edges - 1)))
+            if int(np.sum(candidate_mask)) >= min_required_edges:
+                spec['edge'] = candidate_mask
+
+    if force_edge_anchors:
+        edge_window_points = min(15, len(spec))
+        right_chunk = spec.iloc[-edge_window_points:]
+        right_edge_idx = right_chunk['anchor_flux_stretched'].idxmax()
+        spec.loc[spec.index > right_edge_idx, 'edge'] = False
+        spec.loc[right_edge_idx, 'edge'] = True
+        spec.loc[right_edge_idx, 'fit_flux_stretched'] = spec.loc[right_edge_idx, 'anchor_flux_stretched']
     
     if fit_method == 'poly':
-        poly_fitting = np.polyfit(spec.loc[spec['edge'], 'wave'], spec.loc[spec['edge'], 'flux_peaks_removed_smoothed_stretched'], poly_deg)
+        n_edge = np.sum(spec['edge'])
+        effective_poly_deg = min(poly_deg, max(1, n_edge-1))
+        poly_fitting = np.polyfit(spec.loc[spec['edge'], 'wave'], spec.loc[spec['edge'], 'fit_flux_stretched'], effective_poly_deg)
         spec['continuum'] = np.polyval(poly_fitting, spec['wave']) * stretch_ratio
         spec['flux_normed'] = spec['flux'] / spec['continuum']
     elif fit_method == 'spline':
-        cs = UnivariateSpline(spec.loc[spec['edge'], 'wave'], spec.loc[spec['edge'], 'flux_peaks_removed_smoothed_stretched'], s=spline_s)
+        cs = UnivariateSpline(spec.loc[spec['edge'], 'wave'], spec.loc[spec['edge'], 'fit_flux_stretched'], s=spline_s)
         spec['continuum'] = cs(spec['wave']) * stretch_ratio
         spec['flux_normed'] = spec['flux'] / spec['continuum']
     elif fit_method == 'akima':
-        cs = Akima1DInterpolator(spec.loc[spec['edge'], 'wave'], spec.loc[spec['edge'], 'flux_peaks_removed_smoothed_stretched'])
+        cs = Akima1DInterpolator(spec.loc[spec['edge'], 'wave'], spec.loc[spec['edge'], 'fit_flux_stretched'])
         spec['continuum'] = cs(spec['wave']) * stretch_ratio
         spec['flux_normed'] = spec['flux'] / spec['continuum']
     else:
@@ -341,8 +441,9 @@ def rolling_line(spec, stretch=True, fit_method='poly', plot=False, plot_save_di
     if plot:
         plt.figure(figsize=(13, 3), dpi=150)
         plt.plot(spec.loc[:, 'wave'], spec.loc[:, 'flux'], lw=0.5, zorder=0, label='flux')
-        plt.plot(spec['wave'], spec['flux_peaks_removed_smoothed'], lw=0.5, label='flux_peaks_removed_smoothed')
-        plt.scatter(spec.loc[spec['edge'], 'wave'], spec.loc[spec['edge'], 'flux_peaks_removed_smoothed'], 
+        plt.plot(spec['wave'], spec[flux_for_edges], lw=0.5, label=flux_for_edges)
+        edge_y = spec.loc[spec['edge'], 'fit_flux_stretched'] * stretch_ratio
+        plt.scatter(spec.loc[spec['edge'], 'wave'], edge_y,
                     s=1, color='red', zorder=10, label='continuum points')
         plt.xlim(plt.xlim())
         plt.plot(spec['wave'], spec['continuum'], lw=1, label='continuum')
@@ -356,7 +457,7 @@ def rolling_line(spec, stretch=True, fit_method='poly', plot=False, plot_save_di
 
     return spec
 
-def normalization(spec_in, stretch=True, fit_method='poly', rollmax_width=20, base_ratio=2, penalty_ratio=1, poly_deg=8, spline_s=None, printout=False, plot=False, plot_save_dir=None, detail_out=False, plot_title=''):
+def normalization(spec_in, stretch=True, fit_method='poly', rollmax_width=20, base_ratio=2, penalty_ratio=1, max_radius_ratio=0.1, radius_override=None, force_edge_anchors=False, poly_deg=8, spline_s=None, printout=False, plot=False, plot_save_dir=None, detail_out=False, plot_title=''):
     '''
     The main function to perform normalization.
 
@@ -376,6 +477,19 @@ def normalization(spec_in, stretch=True, fit_method='poly', rollmax_width=20, ba
         The base enlarge ratio for the alpha-radius by r = r_base * base_ratio * (1 + penalty_ratio*penalty).
     penalty_ratio : deafult 1 (AA)
         The ratio for converting penalty to alpha-radius by r = r_base * base_ratio * (1 + penalty_ratio*penalty)。
+    max_radius_ratio : default 0.1
+        Maximum allowed alpha-radius as a fraction of the order wavelength span.
+        Set to None to disable this geometric safeguard.
+    radius_override : float or array-like, optional
+        Manually override the alpha radius. If a scalar is provided, the same
+        radius is used for the whole order. If an array is provided, it must
+        have the same length as the spectrum. When set, the automatic FWHM-
+        based radius logic is bypassed.
+    force_edge_anchors : bool, default False
+        Force a right-edge continuum anchor using the same rough-continuum
+        proxy used to choose the left-edge starting anchor. The left edge
+        already has an anchor by default; this option mainly adds the
+        symmetric right-edge constraint.
     printout :
         Whether print out some status.
     plot :
@@ -394,10 +508,13 @@ def normalization(spec_in, stretch=True, fit_method='poly', rollmax_width=20, ba
 
     '''
     spec = peak_removal(spec_in.copy(), printout=printout, plot=plot, plot_save_dir=plot_save_dir, plot_title=plot_title)
-    # spec = snr_smooth(spec, plot=plot, plot_save_dir=plot_save_dir)
-    line_fwhm = determine_line_width(spec, rollmax_width=rollmax_width, printout=printout, plot=plot, plot_save_dir=plot_save_dir, plot_title=plot_title)
-    spec = determine_alpha_radius(spec, line_fwhm, base_ratio=base_ratio, penalty_ratio=penalty_ratio, rollmax_width=rollmax_width,plot=plot, plot_save_dir=plot_save_dir, plot_title=plot_title)
-    spec = rolling_line(spec, stretch=stretch, fit_method=fit_method, plot=plot, plot_save_dir=plot_save_dir, poly_deg=poly_deg, spline_s=spline_s, plot_title=plot_title)
+    spec = snr_smooth(spec, plot=plot, plot_save_dir=plot_save_dir)
+    if radius_override is None:
+        line_fwhm = determine_line_width(spec, rollmax_width=rollmax_width, printout=printout, plot=plot, plot_save_dir=plot_save_dir, plot_title=plot_title)
+    else:
+        line_fwhm = np.nan
+    spec = determine_alpha_radius(spec, line_fwhm, base_ratio=base_ratio, penalty_ratio=penalty_ratio, rollmax_width=rollmax_width, max_radius_ratio=max_radius_ratio, radius_override=radius_override, plot=plot, plot_save_dir=plot_save_dir, plot_title=plot_title)
+    spec = rolling_line(spec, stretch=stretch, fit_method=fit_method, force_edge_anchors=force_edge_anchors, plot=plot, plot_save_dir=plot_save_dir, poly_deg=poly_deg, spline_s=spline_s, plot_title=plot_title)
 
     if not detail_out:
         spec = spec[list(spec_in.columns) + ['continuum', 'flux_normed']]

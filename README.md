@@ -50,6 +50,9 @@ normalization(
     rollmax_width=20,
     base_ratio=2,
     penalty_ratio=1,
+    max_radius_ratio=0.1,
+    radius_override=None,
+    force_edge_anchors=False,
     poly_deg=8,
     spline_s=None,
     printout=False,
@@ -70,6 +73,9 @@ Continuum-normalize a spectrum and return a new `DataFrame`.
 - `rollmax_width`: rolling window width, in Angstrom, used when estimating line width and alpha radius.
 - `base_ratio`: base scaling applied to the alpha radius.
 - `penalty_ratio`: extra scaling applied to the alpha radius in deeper absorption regions.
+- `max_radius_ratio`: maximum alpha radius as a fraction of the wavelength span of the current order. Set to `None` to disable this safeguard.
+- `radius_override`: manually override the alpha radius. Pass a scalar to use one radius for the whole order, or an array with one radius per pixel. When set, the automatic FWHM-based radius logic is skipped.
+- `force_edge_anchors`: force a right-edge continuum anchor using the same rough-continuum proxy used for the left-edge starting anchor. The left edge already has an anchor by default; this option mainly adds the symmetric right-edge constraint.
 - `poly_deg`: polynomial degree used when `fit_method="poly"`.
 - `spline_s`: smoothing factor used when `fit_method="spline"`.
 - `printout`: whether to print progress information such as the estimated line FWHM.
